@@ -4,6 +4,33 @@ Operational reference for triaging issues in this service. Written the way
 I'd document a real support handoff: symptom → likely cause → diagnostic
 steps → resolution.
 
+## 0. Accessing the live deployment
+
+The demo runs on AWS EC2 (`i-0f88fbc1a72c890c7`, `t3.micro`,
+`eu-central-1`), public IP `18.193.101.255`.
+
+```bash
+# SSH in (key restricted to the operator's IP in the security group)
+ssh -i ~/.ssh/api-toolkit-key.pem ubuntu@18.193.101.255
+
+# Once connected, the compose commands below work exactly as they do locally
+cd api-debugging-toolkit && sudo docker compose ps
+```
+
+Before SSHing in, a quick outside-in check with
+[infra-health-check](https://github.com/ubiquitousdrop/infra-health-check)
+tells you whether the instance itself is up and whether the app is
+responding, without needing to log in at all:
+
+```bash
+infra-health ec2 i-0f88fbc1a72c890c7           # is the instance running?
+infra-health http http://18.193.101.255:5000/health   # is the app responding?
+```
+
+If the EC2 check fails but the instance shows as running in the AWS
+console, or vice versa, that split result is itself diagnostic — see
+which one disagrees and start there.
+
 ## 1. First response to any report ("the API is down / slow / erroring")
 
 1. Hit `GET /health`.
