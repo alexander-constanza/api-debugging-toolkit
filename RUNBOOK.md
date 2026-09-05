@@ -1,41 +1,39 @@
-# Runbook — API Debugging Toolkit
+# Runbook: API Debugging Toolkit
 
 Operational reference for triaging issues in this service. Written the way
-I'd document a real support handoff: symptom → likely cause → diagnostic
-steps → resolution.
+I'd document a real support handoff: symptom, likely cause, diagnostic
+steps, resolution.
 
-## 0. Accessing the live deployment
+## 0. Accessing a deployment
 
-The demo runs on AWS EC2 (`i-0f88fbc1a72c890c7`, `t3.micro`,
-`eu-central-1`), public IP `18.193.101.255`.
-
-```bash
-# SSH in (key restricted to the operator's IP in the security group)
-ssh -i ~/.ssh/api-toolkit-key.pem ubuntu@18.193.101.255
-
-# Once connected, the compose commands below work exactly as they do locally
-cd api-debugging-toolkit && sudo docker compose ps
-```
-
-Before SSHing in, a quick outside-in check with
-[infra-health-check](https://github.com/ubiquitousdrop/infra-health-check)
-tells you whether the instance itself is up and whether the app is
-responding, without needing to log in at all:
+The service runs as containers, so wherever it is deployed the first
+commands are the same ones used locally. From the directory holding
+`docker-compose.yml` on the host running it:
 
 ```bash
-infra-health ec2 i-0f88fbc1a72c890c7           # is the instance running?
-infra-health http http://18.193.101.255:5000/health   # is the app responding?
+docker compose ps                    # are api and db both Up (and healthy)?
+docker compose logs api --tail 100   # recent application logs
+docker compose logs db --tail 50     # database container logs
 ```
 
-If the EC2 check fails but the instance shows as running in the AWS
-console, or vice versa, that split result is itself diagnostic — see
-which one disagrees and start there.
+Before logging in to the host at all, an outside-in check with
+[infra-health-check](https://github.com/alexander-constanza/infra-health-check)
+tells you whether the endpoint is responding:
+
+```bash
+infra-health http http://<host>:5000/health
+```
+
+If the outside-in check fails but the containers report healthy from the
+inside, that split result is itself diagnostic: the problem is between the
+client and the host (DNS, security group/firewall, port mapping), not in
+the application.
 
 ## 1. First response to any report ("the API is down / slow / erroring")
 
 1. Hit `GET /health`.
    - `200 {"status": "ok"}` → API and DB are both reachable. The issue is
-     likely client-side, network, or a specific endpoint — skip to the
+     likely client-side, network, or a specific endpoint, so skip to the
      relevant section below.
    - `503 {"status": "degraded"}` → database is unreachable. Go to
      **Section 2**.
@@ -58,7 +56,7 @@ docker compose exec db pg_isready -U toolkit
 ```
 
 **Resolve:**
-- If `db` isn't healthy yet, wait — `depends_on: condition: service_healthy`
+- If `db` isn't healthy yet, wait. `depends_on: condition: service_healthy`
   should prevent `api` from starting before Postgres is ready, but if you
   bypassed that (e.g. ran `app/main.py` directly against a Postgres URL
   before it was up), restart the api service after the DB reports healthy.
@@ -82,20 +80,25 @@ endpoints (not just `/simulate/timeout`), check:
 
 ## 4. Client getting 400/422 on `POST /orders`
 
-This is intentional input validation, not a bug — but it's the #1 source
-of "the API is broken" tickets, so know the three cases cold:
+This is intentional input validation, not a bug, but it is the #1 source
+of "the API is broken" tickets, so know the cases cold:
 
 | Response | Cause | What to tell the customer |
 |---|---|---|
-| `400 invalid_json` | Body isn't valid JSON, or `Content-Type` header missing/wrong | Confirm they're sending `Content-Type: application/json` and the body parses |
-| `400 missing_fields` | One of `customer_name`, `item`, `quantity` absent | Check the `fields` array in the response — it names exactly what's missing |
-| `422 invalid_quantity` | `quantity` isn't a positive integer | Distinguish from `400`: the JSON was valid, the *value* was semantically wrong |
+| `400 invalid_json` | Body isn't valid JSON, isn't a JSON *object* (an array or bare scalar), or `Content-Type` is missing/wrong | Confirm they're sending `Content-Type: application/json` and that the body is a JSON object |
+| `400 missing_fields` | One of `customer_name`, `item`, `quantity` is absent **or explicitly null** | Check the `fields` array in the response: it names exactly what's missing. An explicit `null` is reported here, not as a bad value, because it's the same client bug |
+| `422 invalid_field` | `customer_name` or `item` isn't a non-empty string (a dict, a list, or whitespace only) | The response names the offending `field`. The JSON parsed, the value was the wrong shape |
+| `422 invalid_quantity` | `quantity` isn't a positive integer (`true` counts as invalid, not as 1) | Distinguish from `400`: the JSON was valid, the *value* was semantically wrong |
+
+Note that `{}` returns `missing_fields` listing all three fields, not a
+generic `invalid_json`. Telling a client "your body was bad" when you
+could tell them "you're missing `quantity`" wastes a whole round trip.
 
 ## 5. Getting 429 on requests
 
-`GET /simulate/rate-limit` always returns this — use it to test client-side
-retry/backoff logic. Response includes `retry_after_seconds`; a correctly
-behaving client should honor it before retrying.
+`GET /simulate/rate-limit` always returns this: use it to test client-side
+retry/backoff logic. Response includes `retry_after_seconds`, and a
+correctly behaving client should honor it before retrying.
 
 ## 6. Unhandled exceptions (500s)
 
@@ -107,21 +110,83 @@ client as `{"error": "internal_server_error", "request_id": "..."}`.
 ```bash
 docker compose logs api | grep "<request_id>" | grep unhandled_exception
 ```
-The `exc_info` field in that log line has the full Python traceback —
+The `exc_info` field in that log line has the full Python traceback, and
 that's your starting point for root cause, not the generic client-facing
 message.
 
+**Important:** a 500 here means the *server* failed. Client mistakes
+(unknown path, wrong method, unparseable path parameter) are answered as
+404 or 405 by a separate handler and never reach this one. If you see a
+spike in `internal_server_error`, it is real, not routing noise. A
+catch-all handler that swallows 404s is a failure mode in its own right:
+it lies to the client and inflates the error-rate metric you page on.
+
+## 7. Health check times out while another request is in flight
+
+**Symptom:** `/health` hangs or times out, monitoring flaps, but the
+service looks fine the moment you retry. Often it coincides with someone
+hitting `/simulate/timeout?seconds=10` or a genuinely slow query.
+
+**Cause:** gunicorn's default is a *single synchronous worker*. One
+in-flight blocking request occupies the only worker there is, so every
+other request, health checks included, waits behind it. The service isn't
+down, it's starved. This is worth knowing because it looks exactly like
+an outage from the outside while every container reports healthy.
+
+**Diagnose:**
+```bash
+docker compose logs api | grep request_completed   # a long duration_ms overlapping the gap?
+docker compose exec api ps aux | grep gunicorn     # how many worker processes?
+```
+If only one gunicorn worker process is running alongside the master, that
+is the problem.
+
+**Resolve:** run more than one worker, and give each some threads, so a
+blocking request can't monopolize the process. This repo's Dockerfile does
+that:
+
+```
+gunicorn --workers 2 --threads 4 --timeout 30 --bind 0.0.0.0:5000 app.main:create_app()
+```
+
+Worker count is usually sized from CPU count (`2 * cores + 1` is the
+common starting point); threads help when the workload is I/O bound, as it
+is here. `--timeout 30` ensures a genuinely stuck worker is recycled
+rather than hanging forever.
+
+## 8. Practicing a dependency outage
+
+`POST /simulate/db-down {"down": true}` forces `check_db_connection` to
+report failure, so `/health` returns `503 degraded` without touching the
+real database. It's the fastest way to rehearse Section 2's drill, or to
+verify that monitoring actually alerts on a degraded health check.
+
+```bash
+curl -X POST http://localhost:5000/simulate/db-down \
+  -H "Content-Type: application/json" -d '{"down": true}'
+curl -i http://localhost:5000/health    # 503, database: unreachable
+curl -X POST http://localhost:5000/simulate/db-down \
+  -H "Content-Type: application/json" -d '{"down": false}'
+```
+
+The flag is in-process, so it resets on restart and, with more than one
+gunicorn worker, applies only to the worker that served the toggle
+request. That's a useful accident: it demonstrates why per-process state
+doesn't belong in a horizontally scaled service.
+
 ## Design notes (why it's built this way)
 
-- **Every log line is JSON** — greppable/parseable by request_id, not
-  free-text prose that requires manual reading.
-- **`X-Request-Id` on every response** — the single most useful thing an
+- **Every log line is JSON**, greppable and parseable by request_id rather
+  than free-text prose that requires manual reading. Fields passed as
+  `extra` become real top-level keys (`path`, `status`, `duration_ms`), so
+  you can filter on them instead of regexing a message string.
+- **`X-Request-Id` on every response**, the single most useful thing an
   API can give a support engineer: a thread to pull that ties a customer's
   report to exact log lines.
-- **`/health` checks the DB, not just "process is alive"** — a process
-  that's up but can't reach its database is still an outage from the
-  customer's point of view.
-- **400 vs 422 vs 500 are used deliberately**, not interchangeably —
-  malformed request, semantically invalid input, and server-side failure
-  are different problems with different fixes, and conflating them makes
-  triage slower.
+- **`/health` checks the DB, not just "process is alive"**, because a
+  process that's up but can't reach its database is still an outage from
+  the customer's point of view.
+- **400 vs 422 vs 404 vs 500 are used deliberately**, not
+  interchangeably. Malformed request, semantically invalid input, wrong
+  address, and server-side failure are different problems with different
+  fixes, and conflating them makes triage slower.

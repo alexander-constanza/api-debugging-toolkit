@@ -2,12 +2,24 @@
 
 Support/FDE engineers need logs that are greppable and parseable, not
 free-text prose. This configures the root logger to emit one JSON object
-per line, including a request_id when available.
+per line, with every field passed via `extra` promoted to a top-level key
+so it can be filtered on directly (path, status, duration_ms, request_id)
+rather than parsed back out of a message string.
 """
 import json
 import logging
 import sys
 import time
+
+# Attributes every LogRecord carries by default. Anything outside this set
+# arrived via `extra=` and belongs in the JSON payload as its own key.
+# Built by instantiating a real record so it stays correct across Python
+# versions rather than hardcoding a list that silently drifts.
+_RESERVED = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) | {
+    "message",
+    "asctime",
+    "taskName",
+}
 
 
 class JsonFormatter(logging.Formatter):
@@ -18,11 +30,10 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        if hasattr(record, "request_id"):
-            payload["request_id"] = record.request_id
+        payload.update({k: v for k, v in record.__dict__.items() if k not in _RESERVED})
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
-        return json.dumps(payload)
+        return json.dumps(payload, default=str)
 
 
 def configure_logging(level: int = logging.INFO) -> None:
