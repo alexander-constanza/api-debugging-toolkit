@@ -139,3 +139,10 @@ infra-health http http://<host>:5000/health
 - **Identical deploy and local commands** (`docker compose up --build`),
   so there's no drift between "how I tested it" and "how it actually
   runs."
+
+## How this was built
+
+Written with AI assistance (Claude), the same way I work day to day: I set the
+design and the constraints, the model drafted, and I reviewed, tested and
+deployed it. The design choices above are mine and I can walk through any of
+them. Everything described here is covered by the test suite.
