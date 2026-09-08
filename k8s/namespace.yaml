@@ -1,0 +1,9 @@
+# Base: Kubernetes core/v1 Namespace. Verified against the Kubernetes API on 2026-09-07.
+# Everything in this pack lives in this one namespace so the whole exercise is
+# deleted with a single `kubectl delete namespace toolkit`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: toolkit
+  labels:
+    app.kubernetes.io/part-of: api-debugging-toolkit

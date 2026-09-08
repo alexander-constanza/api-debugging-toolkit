@@ -1,0 +1,22 @@
+### Cluster and node
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:20Z
+$ kubectl version
+
+Client Version: v1.36.4+k3s1
+Kustomize Version: v5.8.1
+Server Version: v1.36.4+k3s1
+
+### Nodes
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:21Z
+$ kubectl get nodes -o wide
+
+NAME               STATUS   ROLES           AGE     VERSION        INTERNAL-IP     EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION           CONTAINER-RUNTIME
+ip-172-31-41-235   Ready    control-plane   7h26m   v1.36.4+k3s1   172.31.41.235   <none>        Ubuntu 22.04.5 LTS   6.8.0-1063-aws (amd64)   containerd://2.3.4-k3s1.36
+
+### Storage class shipped by k3s
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:21Z
+$ kubectl get storageclass
+
+NAME                   PROVISIONER             RECLAIMPOLICY   VOLUMEBINDINGMODE      ALLOWVOLUMEEXPANSION   AGE
+local-path (default)   rancher.io/local-path   Delete          WaitForFirstConsumer   false                  7h25m
+

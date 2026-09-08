@@ -1,0 +1,36 @@
+# Base: Traefik, which k3s installs and runs by default as the cluster's ingress
+# controller (ingressClassName traefik). Verified 2026-09-07. Nothing here is
+# installed by hand: the whole file is the adoption of a base k3s already ships.
+#
+# Deliberately no `host:` rule. Two reasons, both practical:
+#   1. It answers on whatever address reaches the node, so the same Ingress works
+#      from the tailnet by MagicDNS name and by the private IP 172.31.41.235.
+#   2. Tailscale Funnel proxies to localhost:80 while sending the public
+#      <machine>.<tailnet>.ts.net Host header. A host rule would 404 that unless it
+#      were kept in sync with the funnel name by hand.
+#
+# Traefik listens on the node's ports 80 and 443. Neither is open in security group
+# sg-0554419a1c11d5bd9, so this Ingress is reachable over the tailnet only until
+# Tailscale Funnel is deliberately pointed at it (RUNBOOK.md step 7). That is the
+# right default for an API that ships /simulate/* endpoints designed to break.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-debugging-toolkit
+  namespace: toolkit
+  labels:
+    app: api-debugging-toolkit
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-debugging-toolkit
+                port:
+                  # Matches the Service port name in service.yaml, which in turn
+                  # follows the container port. Port 5000 end to end.
+                  name: http

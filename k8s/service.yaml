@@ -1,0 +1,28 @@
+# Base: Kubernetes core/v1 Service. Verified 2026-09-07.
+#
+# ClusterIP, not LoadBalancer and not NodePort. On k3s a type LoadBalancer Service
+# would be answered by klipper (ServiceLB) with a hostPort on the node, which would
+# expose the app on the node's own interfaces and quietly widen the exposure that
+# the Tailscale work has been narrowing. ClusterIP plus the Traefik Ingress keeps
+# one entry point, and creates no AWS load balancer and so no AWS spend.
+#
+# Port 5000 throughout: the app's gunicorn binds 0.0.0.0:5000 (Dockerfile), and
+# docker-compose.yml maps 5000:5000. Nothing in this stack listens on 8080.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-debugging-toolkit
+  namespace: toolkit
+  labels:
+    app: api-debugging-toolkit
+spec:
+  type: ClusterIP
+  selector:
+    app: api-debugging-toolkit
+  ports:
+    - name: http
+      port: 5000
+      # The container port is named `http` in api.yaml, so the Service follows the
+      # name rather than repeating the number. Renaming the port in one place then
+      # cannot silently break the other.
+      targetPort: http

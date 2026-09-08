@@ -1,0 +1,141 @@
+# Base: the repo's own Dockerfile (gunicorn on 0.0.0.0:5000), published to GHCR by
+# .github/workflows/publish.yml. Verified against the repo on 2026-09-07.
+#
+# What kompose would have produced from docker-compose.yml: the Deployment, the
+# Service and the container port. Everything below that kompose does not produce is
+# the actual work: the three probes and the reason each one points where it does,
+# the init container that replaces Compose's `depends_on: condition: service_healthy`,
+# the rolling-update policy that makes a zero-downtime rollout provable, the resource
+# requests, and the secret reference in place of Compose's inline password.
+#
+# The image tag is pinned to a commit, never to `latest`. `latest` plus
+# imagePullPolicy IfNotPresent means the node keeps whatever it pulled first and a
+# rollout silently does nothing; `latest` plus Always means a rollback rolls back to
+# the same moving tag. A sha- tag makes both the rollout and the undo real.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-debugging-toolkit
+  namespace: toolkit
+  labels:
+    app: api-debugging-toolkit
+    app.kubernetes.io/part-of: api-debugging-toolkit
+spec:
+  # Two replicas on one node buy no fault tolerance, and the node could fail with
+  # both of them. They are here for one honest reason: with maxUnavailable 0 they
+  # make "the rollout did not drop a request" a claim the evidence can actually
+  # support. See RUNBOOK.md step 1 (drop to 1 if the node is short of memory) and
+  # step 6 (the /simulate/db-down drill needs 1 replica to be deterministic,
+  # because the toggle is in-process state, not shared state).
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: api-debugging-toolkit
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: api-debugging-toolkit
+    spec:
+      # Compose expressed this as `depends_on: db: condition: service_healthy`.
+      # Kubernetes has no equivalent, so it is an init container. Without it the
+      # first pods start before Postgres is accepting connections, create_all raises,
+      # gunicorn's workers fail to boot and the pod enters CrashLoopBackOff. It
+      # recovers on its own, but the evidence you are about to paste into a README
+      # should not open with RESTARTS 4.
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - 'until pg_isready -h postgres -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"; do echo "waiting for postgres"; sleep 2; done'
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: toolkit-db
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: toolkit-db
+                  key: POSTGRES_DB
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+      containers:
+        - name: api
+          # Replaced by RUNBOOK.md step 4 with the sha- tag the publish workflow
+          # printed. Left obviously invalid so an unpinned apply fails loudly with
+          # ImagePullBackOff instead of quietly running the wrong build.
+          image: ghcr.io/alexander-constanza/api-debugging-toolkit:sha-e1ba6ce
+          # Safe because the tag is immutable: the node pulls each new sha- tag once
+          # and then serves it from disk, including on a rollback.
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: toolkit-db
+                  key: DATABASE_URL
+          # Startup: gates the liveness probe until the app has booted, so liveness
+          # can be aggressive afterwards without guessing an initialDelaySeconds.
+          # 30 x 2s = up to 60 seconds to come up.
+          startupProbe:
+            httpGet:
+              path: /simulate/timeout?seconds=0
+              port: http
+            periodSeconds: 2
+            timeoutSeconds: 5
+            failureThreshold: 30
+          # Liveness deliberately does NOT use /health. /health checks the database
+          # and answers 503 when it cannot reach it (app/main.py), and /simulate/db-down
+          # forces exactly that on purpose. A liveness probe on /health would turn a
+          # Postgres blip, or the repo's own headline drill, into a restart loop:
+          # restarting the API cannot fix a database. /simulate/timeout?seconds=0 is
+          # the only endpoint that returns 200 without touching Postgres, and because
+          # gunicorn runs 2 workers x 4 threads it also proves a worker thread is
+          # free, which a plain TCP check would not. timeoutSeconds is 5 so the probe
+          # still passes on the endpoint's 3 second default if the query string is
+          # ever dropped.
+          livenessProbe:
+            httpGet:
+              path: /simulate/timeout?seconds=0
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Readiness is where /health belongs. Its 503 means "do not send me traffic
+          # yet", which is what removing the pod from the Service endpoints does, and
+          # it recovers by itself when the database comes back. 3 x 10s, so a pod
+          # leaves the endpoints about 30 seconds after its database goes away.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            # 192Mi because gunicorn forks 2 workers, each carrying Flask, SQLAlchemy
+            # and psycopg2 (roughly 70 to 90 MiB resident each). The earlier draft's
+            # 256Mi limit was inside OOMKill range for a two worker process.
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 512Mi

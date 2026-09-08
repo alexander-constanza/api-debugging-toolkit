@@ -1,0 +1,121 @@
+# Base: the official postgres:16-alpine image (the same tag docker-compose.yml already
+# uses) on k3s's built-in local-path StorageClass. Verified 2026-09-07.
+#
+# There is deliberately NO Secret in this file. A manifest that carries a password,
+# even a placeholder one you are told to sed, ends up committed the moment the
+# rest of k8s/ is committed. The Secret is created once, imperatively, in RUNBOOK.md
+# step 4. The keys it must contain, all read below or by api.yaml:
+#
+#   POSTGRES_USER      toolkit
+#   POSTGRES_PASSWORD  generated on the box, never written to a file in the repo
+#   POSTGRES_DB        toolkit
+#   DATABASE_URL       postgresql+psycopg2://toolkit:<password>@postgres:5432/toolkit
+#
+# Single replica with strategy Recreate: two Postgres pods would mount the same
+# ReadWriteOnce volume and corrupt it, and the default RollingUpdate strategy would
+# try exactly that on every change.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: toolkit
+spec:
+  accessModes: ["ReadWriteOnce"]
+  # k3s ships the Rancher local-path provisioner and makes `local-path` the default
+  # StorageClass. It writes under /var/lib/rancher/k3s/storage on the node's existing
+  # root volume: no EBS volume is created, so this adds no AWS spend.
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: toolkit
+  labels:
+    app: postgres
+    app.kubernetes.io/part-of: api-debugging-toolkit
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # Named keys rather than envFrom: envFrom would also inject DATABASE_URL
+          # (which contains the password in a URL) into the database container,
+          # which has no use for it.
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: toolkit-db
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: toolkit-db
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: toolkit-db
+                  key: POSTGRES_DB
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          # Readiness only, no liveness probe, on purpose. Readiness is what the API
+          # needs (it gates the Service endpoints). A liveness probe on a database
+          # restarts it while it is busy, for example during crash recovery, which
+          # turns a slow start into a restart loop.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            # No CPU limit: a CPU limit throttles rather than protects, and on a
+            # single node there is nothing to protect it from. Memory is limited
+            # because memory pressure is what actually kills this node.
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: toolkit
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

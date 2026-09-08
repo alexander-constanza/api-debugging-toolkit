@@ -1,0 +1,13 @@
+### Health through the Ingress, before the rollout
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:22Z
+$ curl -si --max-time 5 http://127.0.0.1/health
+
+HTTP/1.1 200 OK
+Content-Length: 49
+Content-Type: application/json
+Date: Tue, 08 Sep 2026 12:17:22 GMT
+Server: gunicorn
+X-Request-Id: c0e6db4a-9d51-4033-8f9d-056008fd511e
+
+{"dependencies":{"database":"ok"},"status":"ok"}
+

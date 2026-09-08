@@ -1,0 +1,48 @@
+### Everything in the namespace
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:21Z
+$ kubectl -n toolkit get all
+
+NAME                                         READY   STATUS    RESTARTS        AGE
+pod/api-debugging-toolkit-67fd747c97-fx8n5   1/1     Running   1 (2m42s ago)   6h41m
+pod/postgres-666b96f5f6-t2vz4                1/1     Running   0               6h44m
+
+NAME                            TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+service/api-debugging-toolkit   ClusterIP   10.43.101.226   <none>        5000/TCP   6h41m
+service/postgres                ClusterIP   10.43.43.162    <none>        5432/TCP   6h44m
+
+NAME                                    READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/api-debugging-toolkit   1/1     1            1           6h41m
+deployment.apps/postgres                1/1     1            1           6h44m
+
+NAME                                               DESIRED   CURRENT   READY   AGE
+replicaset.apps/api-debugging-toolkit-67fd747c97   1         1         1       6h41m
+replicaset.apps/postgres-666b96f5f6                1         1         1       6h44m
+
+### Ingress
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:21Z
+$ kubectl -n toolkit get ingress -o wide
+
+NAME                    CLASS     HOSTS   ADDRESS         PORTS   AGE
+api-debugging-toolkit   traefik   *       172.31.41.235   80      6h41m
+
+### Persistent volume claim
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:22Z
+$ kubectl -n toolkit get pvc
+
+NAME            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+postgres-data   Bound    pvc-15ad5a9c-c1e0-4355-9be2-dd19ba948e7e   2Gi        RWO            local-path     <unset>                 6h44m
+
+### Pods, with their node
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:22Z
+$ kubectl -n toolkit get pods -o wide
+
+NAME                                     READY   STATUS    RESTARTS        AGE     IP           NODE               NOMINATED NODE   READINESS GATES
+api-debugging-toolkit-67fd747c97-fx8n5   1/1     Running   1 (2m43s ago)   6h41m   10.42.0.16   ip-172-31-41-235   <none>           <none>
+postgres-666b96f5f6-t2vz4                1/1     Running   0               6h44m   10.42.0.17   ip-172-31-41-235   <none>           <none>
+
+### The image running before the rollout
+ghcr.io/alexander-constanza/api-debugging-toolkit:sha-e1ba6ce
+
+### The image being rolled out
+ghcr.io/alexander-constanza/api-debugging-toolkit:sha-3b34c93
+

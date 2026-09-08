@@ -1,0 +1,42 @@
+### Roll forward to the new image
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:22Z
+$ kubectl -n toolkit set image deployment/api-debugging-toolkit api=ghcr.io/alexander-constanza/api-debugging-toolkit:sha-3b34c93
+
+deployment.apps/api-debugging-toolkit image updated
+
+### Rollout status (this is the line worth pasting)
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:22Z
+$ kubectl -n toolkit rollout status deployment/api-debugging-toolkit --timeout=180s
+
+Waiting for deployment "api-debugging-toolkit" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "api-debugging-toolkit" rollout to finish: 1 old replicas are pending termination...
+deployment "api-debugging-toolkit" successfully rolled out
+
+### Revision history
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:40Z
+$ kubectl -n toolkit rollout history deployment/api-debugging-toolkit
+
+deployment.apps/api-debugging-toolkit 
+REVISION  CHANGE-CAUSE
+1         <none>
+2         <none>
+
+
+### Pods after the rollout
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:41Z
+$ kubectl -n toolkit get pods -o wide
+
+NAME                                     READY   STATUS        RESTARTS       AGE     IP           NODE               NOMINATED NODE   READINESS GATES
+api-debugging-toolkit-57fc555b5c-l9q76   1/1     Running       0              19s     10.42.0.18   ip-172-31-41-235   <none>           <none>
+api-debugging-toolkit-67fd747c97-fx8n5   1/1     Terminating   1 (3m2s ago)   6h41m   10.42.0.16   ip-172-31-41-235   <none>           <none>
+postgres-666b96f5f6-t2vz4                1/1     Running       0              6h44m   10.42.0.17   ip-172-31-41-235   <none>           <none>
+
+### Health through the Ingress, on the new image
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:41Z
+$ curl -si --max-time 5 http://127.0.0.1/health
+
+HTTP/1.1 502 Bad Gateway
+Date: Tue, 08 Sep 2026 12:17:41 GMT
+Content-Length: 11
+
+Bad Gateway

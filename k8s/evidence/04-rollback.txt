@@ -1,0 +1,50 @@
+### Undo, back to ghcr.io/alexander-constanza/api-debugging-toolkit:sha-e1ba6ce
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:41Z
+$ kubectl -n toolkit rollout undo deployment/api-debugging-toolkit
+
+Warning: resource deployments/api-debugging-toolkit was previously managed with 'kubectl apply'. Rolling back will not update the kubectl.kubernetes.io/last-applied-configuration annotation, which may cause unexpected behavior on future 'kubectl apply' operations. Consider using 'kubectl apply' with your previous configuration file instead.
+deployment.apps/api-debugging-toolkit rolled back
+
+### Rollout status after the undo
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:41Z
+$ kubectl -n toolkit rollout status deployment/api-debugging-toolkit --timeout=180s
+
+Waiting for deployment "api-debugging-toolkit" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "api-debugging-toolkit" rollout to finish: 1 old replicas are pending termination...
+Waiting for deployment "api-debugging-toolkit" rollout to finish: 1 old replicas are pending termination...
+deployment "api-debugging-toolkit" successfully rolled out
+
+### Revision history after the undo
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:57Z
+$ kubectl -n toolkit rollout history deployment/api-debugging-toolkit
+
+deployment.apps/api-debugging-toolkit 
+REVISION  CHANGE-CAUSE
+2         <none>
+3         <none>
+
+
+### The image now running
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:58Z
+$ kubectl -n toolkit get deployment/api-debugging-toolkit -o jsonpath={.spec.template.spec.containers[?(@.name=='api')].image}{'\n'}
+
+ghcr.io/alexander-constanza/api-debugging-toolkit:sha-e1ba6ce
+
+### Pods after the rollback
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:58Z
+$ kubectl -n toolkit get pods -o wide
+
+NAME                                     READY   STATUS        RESTARTS   AGE     IP           NODE               NOMINATED NODE   READINESS GATES
+api-debugging-toolkit-57fc555b5c-l9q76   1/1     Terminating   0          36s     10.42.0.18   ip-172-31-41-235   <none>           <none>
+api-debugging-toolkit-67fd747c97-ctmnj   1/1     Running       0          17s     10.42.0.19   ip-172-31-41-235   <none>           <none>
+postgres-666b96f5f6-t2vz4                1/1     Running       0          6h44m   10.42.0.17   ip-172-31-41-235   <none>           <none>
+
+### Health through the Ingress, after the rollback
+# host: ip-172-31-41-235, utc: 2026-09-08T12:17:58Z
+$ curl -si --max-time 5 http://127.0.0.1/health
+
+HTTP/1.1 502 Bad Gateway
+Date: Tue, 08 Sep 2026 12:17:58 GMT
+Content-Length: 11
+
+Bad Gateway
