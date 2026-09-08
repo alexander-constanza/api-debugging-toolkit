@@ -1,0 +1,97 @@
+name: publish
+
+# Builds the container image and pushes it to GHCR. This did not exist before
+# 2026-09-07: the repo had only test.yml, which runs ruff and pytest and builds no
+# image at all, so the Kubernetes runbook's earlier claim that "the repo already
+# builds on GitHub Actions" was wrong.
+#
+# Two tags per build:
+#   sha-<short commit>  what a Deployment pins to. Immutable, so a rollout and a
+#                       rollback both mean something.
+#   latest              convenience for `docker run` only. No manifest references it.
+#
+# On third-party actions: there are none in this workflow, so there is nothing here
+# to pin to a commit hash. The runner already has Docker and the built-in
+# GITHUB_TOKEN can push to this repository's own package, which makes docker login,
+# docker build and docker push three plain run steps. actions/checkout is
+# first-party and tagged, the same as the other workflows in this repo. Where a
+# third-party action is genuinely needed the house pattern still applies: pin it to
+# a full commit SHA with a comment naming the tag, as
+# apihealthchecker/.github/workflows/deploy.yml does for setup-flyctl.
+#
+# Runner architecture: ubuntu-latest is x86_64, so this produces a linux/amd64
+# image. The EC2 host is x86_64 (confirm with `uname -m`, RUNBOOK.md step 1). If
+# that ever moves to Graviton, this needs docker buildx with
+# --platform linux/arm64 instead of the plain docker build below.
+
+on:
+  push:
+    branches: [main, audit-fixes]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Same shape as apihealthchecker's deploy workflow: never publish an image built
+  # from a commit whose tests did not pass.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the image and tag
+        id: image
+        run: |
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/api-debugging-toolkit" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build
+        run: |
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "${{ steps.image.outputs.ref }}:${{ steps.image.outputs.tag }}" \
+            -t "${{ steps.image.outputs.ref }}:latest" \
+            .
+
+      - name: Push
+        run: |
+          docker push "${{ steps.image.outputs.ref }}:${{ steps.image.outputs.tag }}"
+          docker push "${{ steps.image.outputs.ref }}:latest"
+
+      # The image line to paste into k8s/api.yaml, shown at the top of the run
+      # summary so it does not have to be dug out of the log.
+      - name: Report the image to deploy
+        run: |
+          echo "::notice title=Deploy this image::${{ steps.image.outputs.ref }}:${{ steps.image.outputs.tag }}"
+          {
+            echo "### Image published"
+            echo ""
+            echo '```'
+            echo "${{ steps.image.outputs.ref }}:${{ steps.image.outputs.tag }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
