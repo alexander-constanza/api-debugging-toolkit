@@ -65,7 +65,11 @@ def health():
     status = "ok" if db_ok else "degraded"
     code = 200 if db_ok else 503
     return jsonify(
-        {"status": status, "dependencies": {"database": "ok" if db_ok else "unreachable"}}
+        {
+            "status": status,
+            "build": "2",
+            "dependencies": {"database": "ok" if db_ok else "unreachable"},
+        }
     ), code
 
 
