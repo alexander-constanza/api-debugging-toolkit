@@ -6,3 +6,6 @@ htmlcov/
 *.db
 .venv/
 venv/
+
+# Tailscale status from k8s/capture.sh names tailnet peers and public IPs: never commit
+k8s/evidence/06-tailscale-not-for-readme.txt
