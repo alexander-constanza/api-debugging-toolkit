@@ -233,7 +233,7 @@ $ curl -si --max-time 5 http://127.0.0.1/health
 ```
 
 
-The `"build"` key in the `/health` body is the marker used to make the two images distinguishable in a `curl` during the rollout above. It is kept rather than reverted, so the deployed image and the repository agree.
+The `"build"` key in the `/health` body is the marker used to make the two images distinguishable in a `curl` during the rollout above. It is kept rather than reverted. Note that the image pinned in `k8s/api.yaml` (`sha-e1ba6ce`) predates that marker, so the live demo's `/health` does not carry a `build` key: the running cluster is one application commit behind this repository, and that commit changes nothing except the marker itself. Re-pin the tag and roll out to close the gap.
 
 ### What this is, and what it is not
 
