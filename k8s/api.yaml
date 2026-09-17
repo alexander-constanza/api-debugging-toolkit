@@ -82,7 +82,7 @@ spec:
           # pulled first and a rollout silently does nothing, and with Always a
           # rollback rolls back to the same moving tag. See "Running on Kubernetes
           # (k3s)" in README.md.
-          image: ghcr.io/alexander-constanza/api-debugging-toolkit:sha-e1ba6ce
+          image: ghcr.io/alexander-constanza/api-debugging-toolkit:sha-682f41e
           # Safe because the tag is immutable: the node pulls each new sha- tag once
           # and then serves it from disk, including on a rollback.
           imagePullPolicy: IfNotPresent

@@ -148,33 +148,49 @@ The namespace is applied on its own line first because `kubectl apply -f k8s/` r
 
 ### Publishing the demo with Tailscale Funnel
 
-The live-demo URL at the top of this README is served by Tailscale Funnel on the EC2 host: Funnel terminates TLS for the public `<machine>.<tailnet>.ts.net` name and proxies to `localhost:80`, where Traefik serves the Ingress. Neither port 80 nor 443 is open in the instance's security group, so Funnel is the only route in from the internet.
+The live-demo URL at the top of this README is served by Tailscale Funnel on the EC2 host: Funnel terminates TLS for the public `<machine>.<tailnet>.ts.net` name and proxies to Traefik, which serves the Ingress. Neither port 80 nor 443 is open in the instance's security group, so Funnel is the only route in from the internet.
 
-Funnel publishes the whole origin, and `k8s/ingress.yaml` has no host or path rule, so every route in `app/main.py` is public and unauthenticated - including `/simulate/*`, whose whole purpose is to break the service:
+**Funnel publishes `/health` and nothing else.** Every other path gets Tailscale's own plain-text `404 page not found` without reaching the application:
 
-- `POST /simulate/db-down {"down": true}` forces `/health` to 503. Readiness is `/health`, so the single replica leaves the Service after about 30 seconds, and Traefik can then no longer route the `{"down": false}` request that would undo it. Liveness is `/simulate/timeout?seconds=0`, which keeps answering 200, so the pod is never restarted. It stays down until someone with cluster access runs `kubectl -n toolkit rollout restart deploy/api-debugging-toolkit`. The flag is per-process and gunicorn runs two workers, so it takes a few POSTs to be deterministic rather than one.
+```bash
+tailscale funnel status
+# https://<machine>.<tailnet>.ts.net (Funnel on)
+# |-- /health proxy http://127.0.0.1:80/health
+```
+
+That narrowing is deliberate, and it is the only thing doing the work. `k8s/ingress.yaml` has no host or path rule and `app/main.py` has no auth, so anything Funnel publishes is public and unauthenticated - and this service ships `/simulate/*` endpoints whose whole purpose is to break it:
+
+- `POST /simulate/db-down {"down": true}` forces `/health` to 503. Readiness is `/health`, so the single replica leaves the Service after about 30 seconds, and Traefik can then no longer route the `{"down": false}` request that would undo it. Liveness is `/simulate/timeout?seconds=0`, which keeps answering 200, so the pod is never restarted. Recovery needs `kubectl -n toolkit rollout restart deploy/api-debugging-toolkit` from inside the cluster. The flag is per-process and gunicorn runs two workers, so it takes a few POSTs to be deterministic rather than one.
 - `GET /simulate/timeout?seconds=10` holds a worker thread for ten seconds. Capacity is `--workers 2 --threads 4`, so about eight concurrent requests stall everything behind them, and sustained, that fails the liveness probe into a restart loop.
 - `POST /orders` is an unauthenticated write. `app/validation.py` sets no maximum length and the columns in `app/db.py` are unbounded `String`, so anything posted is stored and readable back at `/orders/<id>`.
 
-To narrow what is published to just the demo endpoint:
+Publishing only `/health` takes all three off the internet without touching the application, so the drills above still work in full over the tailnet and from inside the cluster.
+
+How it is set, and how to change it:
 
 ```bash
-sudo tailscale funnel status     # what is published right now
-sudo tailscale funnel reset
-sudo tailscale funnel --bg --set-path=/health http://localhost:80/health
-sudo tailscale funnel status     # expect one path, not "/"
+tailscale funnel status                                                    # what is published now
+
+# publish only /health (the current configuration)
+tailscale funnel --bg --yes --set-path=/health http://127.0.0.1:80/health
+tailscale funnel --https=443 --set-path=/ off
+
+tailscale funnel --bg 80                                                   # widen back to the whole origin
+tailscale funnel reset                                                     # withdraw the demo entirely
 ```
 
-Funnel flag syntax varies between Tailscale versions; check `tailscale funnel --help` on the host before running the third command. To withdraw the demo altogether instead, run `sudo tailscale funnel reset` on its own and delete the live-demo line from the top of this README.
+Add the narrow path before removing the wide one, as above, so the published URL never has a gap.
 
 Verify without calling the endpoints that break the service:
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' https://<machine>.<tailnet>.ts.net/health        # expect 200
-curl -s -o /dev/null -w '%{http_code}\n' https://<machine>.<tailnet>.ts.net/orders/999999 # expect the path to be gone
+curl -s -o /dev/null -w '%{http_code}\n' https://<machine>.<tailnet>.ts.net/orders/999999 # expect 404 from Funnel
 ```
 
-`GET /orders/999999` is the right probe here: it is idempotent and harmless whichever layer answers it. Do not use `/simulate/*` to test the block - that is the thing being protected against.
+`GET /orders/999999` is the right probe: it is idempotent and harmless whichever layer answers it, and Funnel's plain-text `404 page not found` is visibly different from the application's JSON 404, so the response tells you which layer replied. Do not use `/simulate/*` to test the block - that is the thing being protected against.
+
+One trap when checking from a machine that is on the tailnet: MagicDNS resolves `<machine>.<tailnet>.ts.net` to the tailnet address, so the request goes over the tailnet instead of through Funnel and does not test the public path at all. Check from off the tailnet.
 
 ### The probes, and why liveness does not use `/health`
 
@@ -233,7 +249,7 @@ $ curl -si --max-time 5 http://127.0.0.1/health
 ```
 
 
-The `"build"` key in the `/health` body is the marker used to make the two images distinguishable in a `curl` during the rollout above. It is kept rather than reverted. Note that the image pinned in `k8s/api.yaml` (`sha-e1ba6ce`) predates that marker, so the live demo's `/health` does not carry a `build` key: the running cluster is one application commit behind this repository, and that commit changes nothing except the marker itself. Re-pin the tag and roll out to close the gap.
+The `"build"` key in the `/health` body is the marker used to make the two images distinguishable in a `curl` during the rollout above. It is kept rather than reverted, so the deployed image and the repository agree: the live demo's `/health` carries `"build": "2"`. The tag pinned in `k8s/api.yaml` is the image actually rolled out; later commits that do not touch `app/` leave it accurate.
 
 ### What this is, and what it is not
 
@@ -245,7 +261,7 @@ Reachability: Traefik serves the Ingress on the node's port 80, which is not ope
 
 Known, and not fixed:
 
-- **The public demo is unauthenticated and includes `/simulate/*`.** Anyone who reads this README can take the demo offline with one `POST /simulate/db-down`, and it stays down until the pod is restarted from inside the cluster. "Publishing the demo with Tailscale Funnel" above explains the mechanism and how to narrow what Funnel publishes. The demo is deliberately left open for now because breaking it is the point of the exercise; that trade is fine for a portfolio box and would not be fine anywhere else.
+- **The application itself is unauthenticated.** Funnel publishes only `/health`, so `/simulate/*` and `POST /orders` cannot be reached from the internet - but nothing in the app or the Ingress enforces that. The protection is at the edge and one command deep: widen Funnel again, or reach the Ingress over the tailnet, and every route is open to whoever gets there. `k8s/ingress.yaml` still has no host or path rule.
 - **`POST /orders` accepts unauthenticated writes with no size limit**, and the columns are unbounded. There is no rate limiting anywhere (`/simulate/rate-limit` only returns a canned 429; it limits nothing).
 - **`create_all` runs at application boot** rather than as a migration job. Design choices below already calls this out as the shortcut alembic would replace.
 - **Postgres runs in-cluster on a `local-path` volume.** That is a portfolio deployment, not a way to run a database: the provisioner does not enforce the PVC's 2Gi request, so it writes against the node's root disk.
