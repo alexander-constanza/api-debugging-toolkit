@@ -21,12 +21,13 @@ metadata:
     app: api-debugging-toolkit
     app.kubernetes.io/part-of: api-debugging-toolkit
 spec:
-  # Two replicas on one node buy no fault tolerance, and the node could fail with
-  # both of them. They are here for one honest reason: with maxUnavailable 0 they
-  # make "the rollout did not drop a request" a claim the evidence can actually
-  # support. See RUNBOOK.md step 1 (drop to 1 if the node is short of memory) and
-  # step 6 (the /simulate/db-down drill needs 1 replica to be deterministic,
-  # because the toggle is in-process state, not shared state).
+  # One replica. Two on a single node buy no fault tolerance anyway, since the node
+  # can take both with it; their only honest use is that with maxUnavailable 0 they
+  # make "the rollout did not drop a request" a claim the evidence can support. It
+  # is 1 here because the /simulate/db-down drill is only deterministic with a
+  # single replica: the toggle is in-process state, not shared state. See "Running
+  # on Kubernetes (k3s)" in README.md for the deploy, and RUNBOOK.md section 8 for
+  # the drill.
   replicas: 1
   revisionHistoryLimit: 10
   selector:
@@ -75,9 +76,12 @@ spec:
               memory: 64Mi
       containers:
         - name: api
-          # Replaced by RUNBOOK.md step 4 with the sha- tag the publish workflow
-          # printed. Left obviously invalid so an unpinned apply fails loudly with
-          # ImagePullBackOff instead of quietly running the wrong build.
+          # Pinned to the sha- tag that .github/workflows/publish.yml printed for
+          # the deployed commit; bump it the same way on the next rollout. Never
+          # `latest`: with imagePullPolicy IfNotPresent the node keeps whatever it
+          # pulled first and a rollout silently does nothing, and with Always a
+          # rollback rolls back to the same moving tag. See "Running on Kubernetes
+          # (k3s)" in README.md.
           image: ghcr.io/alexander-constanza/api-debugging-toolkit:sha-e1ba6ce
           # Safe because the tag is immutable: the node pulls each new sha- tag once
           # and then serves it from disk, including on a rollback.

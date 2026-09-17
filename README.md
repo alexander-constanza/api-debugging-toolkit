@@ -146,6 +146,36 @@ kubectl -n toolkit rollout status deployment/api-debugging-toolkit
 
 The namespace is applied on its own line first because `kubectl apply -f k8s/` reads the directory in alphabetical order, and `api.yaml` would otherwise be created before the namespace it lives in exists.
 
+### Publishing the demo with Tailscale Funnel
+
+The live-demo URL at the top of this README is served by Tailscale Funnel on the EC2 host: Funnel terminates TLS for the public `<machine>.<tailnet>.ts.net` name and proxies to `localhost:80`, where Traefik serves the Ingress. Neither port 80 nor 443 is open in the instance's security group, so Funnel is the only route in from the internet.
+
+Funnel publishes the whole origin, and `k8s/ingress.yaml` has no host or path rule, so every route in `app/main.py` is public and unauthenticated - including `/simulate/*`, whose whole purpose is to break the service:
+
+- `POST /simulate/db-down {"down": true}` forces `/health` to 503. Readiness is `/health`, so the single replica leaves the Service after about 30 seconds, and Traefik can then no longer route the `{"down": false}` request that would undo it. Liveness is `/simulate/timeout?seconds=0`, which keeps answering 200, so the pod is never restarted. It stays down until someone with cluster access runs `kubectl -n toolkit rollout restart deploy/api-debugging-toolkit`. The flag is per-process and gunicorn runs two workers, so it takes a few POSTs to be deterministic rather than one.
+- `GET /simulate/timeout?seconds=10` holds a worker thread for ten seconds. Capacity is `--workers 2 --threads 4`, so about eight concurrent requests stall everything behind them, and sustained, that fails the liveness probe into a restart loop.
+- `POST /orders` is an unauthenticated write. `app/validation.py` sets no maximum length and the columns in `app/db.py` are unbounded `String`, so anything posted is stored and readable back at `/orders/<id>`.
+
+To narrow what is published to just the demo endpoint:
+
+```bash
+sudo tailscale funnel status     # what is published right now
+sudo tailscale funnel reset
+sudo tailscale funnel --bg --set-path=/health http://localhost:80/health
+sudo tailscale funnel status     # expect one path, not "/"
+```
+
+Funnel flag syntax varies between Tailscale versions; check `tailscale funnel --help` on the host before running the third command. To withdraw the demo altogether instead, run `sudo tailscale funnel reset` on its own and delete the live-demo line from the top of this README.
+
+Verify without calling the endpoints that break the service:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://<machine>.<tailnet>.ts.net/health        # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' https://<machine>.<tailnet>.ts.net/orders/999999 # expect the path to be gone
+```
+
+`GET /orders/999999` is the right probe here: it is idempotent and harmless whichever layer answers it. Do not use `/simulate/*` to test the block - that is the thing being protected against.
+
 ### The probes, and why liveness does not use `/health`
 
 `/health` checks the database and returns **503** when it cannot reach it. That is exactly right for a readiness probe: a pod whose database is gone should stop receiving traffic, and Kubernetes takes it out of the Service endpoints until it recovers by itself. It is exactly wrong for a liveness probe: restarting the API cannot fix Postgres, so a liveness probe on `/health` turns a database blip into a restart loop, and `/simulate/db-down`, this repo's own headline drill, would deliberately trigger it.
@@ -207,11 +237,19 @@ The `"build"` key in the `/health` body is the marker used to make the two image
 
 ### What this is, and what it is not
 
-One node, one Postgres, one weekend. Two replicas buy no fault tolerance here, since the node can take both with it; they are there so that "the rollout did not drop a request" is something the evidence can support rather than a claim. Postgres runs in the cluster on a local-path volume, which is a portfolio deployment and not a way to run a database. `create_all` still runs at application boot rather than as a migration job, which the Design choices section above already calls out as the shortcut alembic would replace.
+One node, one Postgres, one weekend. This is a learning exercise and a portfolio piece, not a production service, and the list below is the honest version of what that means rather than a list of things that were finished. It runs a single replica: two on one node buy no fault tolerance anyway, since the node can take both with it, and the `/simulate/db-down` drill is only deterministic with one.
 
 Deploying it also surfaced something Compose hid: `/simulate/db-down` sets a module-level flag inside one gunicorn worker, so behind a Service with more than one replica the toggle reaches one worker out of several and `/health` then answers inconsistently. Scale to one replica to run that drill, or move the flag to shared state.
 
 Reachability: Traefik serves the Ingress on the node's port 80, which is not open to the internet in the instance's security group, so the Ingress is reachable over the tailnet and published to the internet by Tailscale Funnel at the live-demo URL above. Nothing here creates an AWS load balancer or an EBS volume, so it adds no cost beyond the instance itself.
+
+Known, and not fixed:
+
+- **The public demo is unauthenticated and includes `/simulate/*`.** Anyone who reads this README can take the demo offline with one `POST /simulate/db-down`, and it stays down until the pod is restarted from inside the cluster. "Publishing the demo with Tailscale Funnel" above explains the mechanism and how to narrow what Funnel publishes. The demo is deliberately left open for now because breaking it is the point of the exercise; that trade is fine for a portfolio box and would not be fine anywhere else.
+- **`POST /orders` accepts unauthenticated writes with no size limit**, and the columns are unbounded. There is no rate limiting anywhere (`/simulate/rate-limit` only returns a canned 429; it limits nothing).
+- **`create_all` runs at application boot** rather than as a migration job. Design choices below already calls this out as the shortcut alembic would replace.
+- **Postgres runs in-cluster on a `local-path` volume.** That is a portfolio deployment, not a way to run a database: the provisioner does not enforce the PVC's 2Gi request, so it writes against the node's root disk.
+- **The manifests' comments are the design notes.** They were written against the cluster as it stood on 2026-09-07 and are not re-verified on every change, so treat them as intent rather than as current fact.
 
 To remove: `kubectl delete namespace toolkit` for the workload, or `/usr/local/bin/k3s-uninstall.sh` for the whole cluster. The Compose stack is unaffected either way.
 

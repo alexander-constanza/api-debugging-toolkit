@@ -9,10 +9,17 @@
 #      <machine>.<tailnet>.ts.net Host header. A host rule would 404 that unless it
 #      were kept in sync with the funnel name by hand.
 #
-# Traefik listens on the node's ports 80 and 443. Neither is open in security group
-# sg-0554419a1c11d5bd9, so this Ingress is reachable over the tailnet only until
-# Tailscale Funnel is deliberately pointed at it (RUNBOOK.md step 7). That is the
-# right default for an API that ships /simulate/* endpoints designed to break.
+# Traefik listens on the node's ports 80 and 443. Neither is open in the instance's
+# security group, so the only ways in are the tailnet and Tailscale Funnel.
+#
+# Funnel IS pointed at this Ingress: the live-demo URL in README.md is public. Since
+# there is no host or path rule above, every route app/main.py serves is public and
+# unauthenticated, /simulate/* included - and those endpoints exist to break the
+# service on purpose. POST /simulate/db-down in particular can take the demo offline
+# until someone with cluster access restarts the pod, because the readiness probe
+# pulls the only replica out of the Service and the request that would undo it can
+# then no longer reach the app. See "Publishing the demo with Tailscale Funnel" in
+# README.md for what is published and how to narrow it.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

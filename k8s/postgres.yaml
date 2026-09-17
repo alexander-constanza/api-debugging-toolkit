@@ -3,8 +3,9 @@
 #
 # There is deliberately NO Secret in this file. A manifest that carries a password,
 # even a placeholder one you are told to sed, ends up committed the moment the
-# rest of k8s/ is committed. The Secret is created once, imperatively, in RUNBOOK.md
-# step 4. The keys it must contain, all read below or by api.yaml:
+# rest of k8s/ is committed. The Secret is created once, imperatively, by the
+# `kubectl create secret` command in "Running on Kubernetes (k3s)" in README.md.
+# The keys it must contain, all read below or by api.yaml:
 #
 #   POSTGRES_USER      toolkit
 #   POSTGRES_PASSWORD  generated on the box, never written to a file in the repo
